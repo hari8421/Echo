@@ -1,8 +1,14 @@
-"""Provider-neutral chat client with tool-call normalization."""
+"""Provider-neutral chat client with tool-call normalization.
+
+Network failures are classified as transient (worth retrying) or permanent, and
+transient ones are retried with exponential backoff so a sleeping laptop or a
+briefly busy model server does not lose a conversation.
+"""
 
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -11,13 +17,40 @@ from typing import List, Optional
 from .config import Config
 
 TIMEOUT = 300
+TRANSIENT_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 
 
 class LLMError(Exception):
-    pass
+    """A model call failed. ``transient`` marks failures worth retrying."""
+
+    def __init__(self, message: str, transient: bool = False):
+        super().__init__(message)
+        self.transient = transient
 
 
-def _post(url: str, payload: dict, headers: Optional[dict] = None) -> dict:
+def _post(url: str, payload: dict, headers: Optional[dict] = None, retries: int = 0, delay: float = 1.0) -> dict:
+    return _with_retries(
+        lambda: _post_once(url, payload, headers), retries, delay
+    )
+
+
+def _get(url: str, headers: Optional[dict] = None, retries: int = 0, delay: float = 1.0) -> dict:
+    return _with_retries(lambda: _get_once(url, headers), retries, delay)
+
+
+def _with_retries(call, retries: int, delay: float):
+    attempt = 0
+    while True:
+        try:
+            return call()
+        except LLMError as exc:
+            if not exc.transient or attempt >= max(0, retries):
+                raise
+            attempt += 1
+            time.sleep(max(0.0, delay) * (2 ** (attempt - 1)))
+
+
+def _post_once(url: str, payload: dict, headers: Optional[dict] = None) -> dict:
     data = json.dumps(payload).encode("utf-8")
     request_headers = {"Content-Type": "application/json"}
     if headers:
@@ -28,25 +61,38 @@ def _post(url: str, payload: dict, headers: Optional[dict] = None) -> dict:
             return json.loads(resp.read().decode("utf-8", errors="replace"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:600]
-        raise LLMError("HTTP %s from %s: %s" % (exc.code, url, detail)) from exc
+        raise LLMError(
+            "HTTP %s from %s: %s" % (exc.code, url, detail),
+            transient=exc.code in TRANSIENT_STATUS,
+        ) from exc
     except urllib.error.URLError as exc:
-        raise LLMError(_connection_hint(url, exc.reason)) from exc
+        raise LLMError(_connection_hint(url, exc.reason), transient=True) from exc
     except TimeoutError as exc:
-        raise LLMError("Request to %s timed out. Try a smaller model or a shorter task." % url) from exc
+        raise LLMError(
+            "Request to %s timed out. Try a smaller model or a shorter task." % url,
+            transient=True,
+        ) from exc
     except json.JSONDecodeError as exc:
         raise LLMError("The model server returned a non-JSON response.") from exc
 
 
-def _get(url: str, headers: Optional[dict] = None) -> dict:
+def _get_once(url: str, headers: Optional[dict] = None) -> dict:
     req = urllib.request.Request(url, headers=headers or {}, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read().decode("utf-8", errors="replace"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:300]
-        raise LLMError("HTTP %s from %s: %s" % (exc.code, url, detail)) from exc
+        raise LLMError(
+            "HTTP %s from %s: %s" % (exc.code, url, detail),
+            transient=exc.code in TRANSIENT_STATUS,
+        ) from exc
     except urllib.error.URLError as exc:
-        raise LLMError(_connection_hint(url, exc.reason)) from exc
+        raise LLMError(_connection_hint(url, exc.reason), transient=True) from exc
+    except TimeoutError as exc:
+        raise LLMError("Request to %s timed out." % url, transient=True) from exc
+    except json.JSONDecodeError as exc:
+        raise LLMError("The model server returned a non-JSON response.") from exc
 
 
 def _connection_hint(url: str, reason) -> str:
@@ -64,12 +110,14 @@ class LLM:
         self.cfg = cfg
 
     def chat(self, messages: List[dict], tools: Optional[List[dict]] = None) -> dict:
+        retries = max(0, self.cfg.llm_retries)
+        delay = self.cfg.llm_retry_delay
         if self.cfg.provider == "ollama":
-            return self._ollama_chat(messages, tools)
-        return self._openai_chat(messages, tools)
+            return self._ollama_chat(messages, tools, retries, delay)
+        return self._openai_chat(messages, tools, retries, delay)
 
     # -- Ollama ------------------------------------------------------------
-    def _ollama_chat(self, messages, tools) -> dict:
+    def _ollama_chat(self, messages, tools, retries: int, delay: float) -> dict:
         payload = {
             "model": self.cfg.model,
             "messages": [self._to_ollama(message) for message in messages],
@@ -78,7 +126,7 @@ class LLM:
         }
         if tools:
             payload["tools"] = tools
-        data = _post(self.cfg.base_url + "/api/chat", payload)
+        data = _post(self.cfg.base_url + "/api/chat", payload, retries=retries, delay=delay)
         message = data.get("message") or {}
         calls = []
         for index, call in enumerate(message.get("tool_calls") or []):
@@ -124,7 +172,7 @@ class LLM:
         return {"role": role, "content": content}
 
     # -- OpenAI-compatible -------------------------------------------------
-    def _openai_chat(self, messages, tools) -> dict:
+    def _openai_chat(self, messages, tools, retries: int, delay: float) -> dict:
         payload = {
             "model": self.cfg.model,
             "messages": [self._to_openai(message) for message in messages],
@@ -135,7 +183,9 @@ class LLM:
         headers = {}
         if self.cfg.api_key:
             headers["Authorization"] = "Bearer " + self.cfg.api_key
-        data = _post(self.cfg.base_url + "/chat/completions", payload, headers)
+        data = _post(
+            self.cfg.base_url + "/chat/completions", payload, headers, retries=retries, delay=delay
+        )
         try:
             message = data["choices"][0]["message"]
         except (KeyError, IndexError) as exc:

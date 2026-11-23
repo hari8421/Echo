@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, List, Optional
 
@@ -54,6 +56,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
 
 
 def connect(path: Path) -> sqlite3.Connection:
+    """Open the database.
+
+    The connection keeps SQLite's default same-thread check: each caller owns a
+    connection made on the thread that uses it (the CLI on its main thread, the
+    web UI on the thread serving requests).
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
@@ -64,10 +72,70 @@ def connect(path: Path) -> sqlite3.Connection:
 class Database:
     def __init__(self, path: Path):
         self.path = Path(path)
-        self.conn = connect(self.path)
-        self.conn.executescript(SCHEMA)
+        self.recovered_from = ""
+        self.conn = None
+        try:
+            self.conn = connect(self.path)
+            self.conn.executescript(SCHEMA)
+            self.conn.commit()
+            # A cheap read catches a file that is corrupt beyond the schema.
+            self.conn.execute("SELECT COUNT(*) FROM docs").fetchone()
+        except sqlite3.DatabaseError:
+            self._quarantine()
+            self.conn = connect(self.path)
+            self.conn.executescript(SCHEMA)
+            self.conn.commit()
         self.fts = self._init_fts()
         self.conn.commit()
+
+    def _quarantine(self) -> None:
+        """Move an unreadable database aside so the index can be rebuilt from files."""
+        if self.conn is not None:
+            try:
+                self.conn.close()
+            except sqlite3.Error:
+                pass
+            self.conn = None
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = self.path.with_name("%s.corrupt-%s" % (self.path.name, stamp))
+        try:
+            os.replace(str(self.path), str(target))
+            self.recovered_from = str(target)
+        except OSError:
+            return
+        for suffix in ("-wal", "-shm"):
+            try:
+                os.unlink(str(self.path) + suffix)
+            except OSError:
+                pass
+
+    def integrity(self) -> bool:
+        try:
+            row = self.conn.execute("PRAGMA quick_check").fetchone()
+        except sqlite3.DatabaseError:
+            return False
+        return bool(row) and str(row[0]).lower() == "ok"
+
+    def rebuild_fts(self) -> bool:
+        """Recreate the full-text index from the stored chunks (no re-reading files)."""
+        if not self.fts:
+            self.fts = self._init_fts()
+        if not self.fts:
+            return False
+        try:
+            self.conn.execute("DELETE FROM chunks_fts")
+            self.conn.execute(
+                """
+                INSERT INTO chunks_fts (doc_id, ord, title, text)
+                SELECT c.doc_id, c.ord, COALESCE(d.title, c.doc_id), c.text
+                FROM chunks c LEFT JOIN docs d ON d.id = c.doc_id
+                """
+            )
+            self.conn.commit()
+            return True
+        except sqlite3.DatabaseError:
+            self.conn.rollback()
+            return False
 
     def _init_fts(self) -> bool:
         try:

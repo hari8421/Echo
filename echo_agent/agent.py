@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from .config import Config
 from .db import Database
@@ -37,6 +37,11 @@ def build_system_prompt(cfg: Config, db: Database, memory: MemoryStore) -> str:
         "review; you cannot publish, so never claim you did.",
         "- Be concise and specific. Ask one short question only if the request is "
         "genuinely ambiguous.",
+        "- Tools return JSON. On an {\"error\": ...} result, read it, change your "
+        "arguments or choose another tool. Never repeat an identical failing call.",
+        "- Work in small steps so a failure is cheap: create or search first, then "
+        "edit. If a step fails, continue from what you already know rather than "
+        "starting over.",
         "",
         "Library: %d document(s). Memory: %d item(s)." % (db.doc_count(), memory.count()),
     ]
@@ -78,6 +83,7 @@ class Agent:
         self.history.append({"role": "user", "content": text})
         self.db.add_message(self.session, "user", text, now())
 
+        seen_calls: Dict[str, int] = {}
         for _step in range(self.cfg.max_tool_steps):
             messages = [
                 {"role": "system", "content": build_system_prompt(self.cfg, self.db, self.memory)}
@@ -92,8 +98,30 @@ class Agent:
                         "tool_calls": calls,
                     }
                 )
+                stuck = ""
                 for call in calls:
                     arguments = call.get("arguments") or {}
+                    signature = "%s:%s" % (
+                        call.get("name", ""),
+                        json.dumps(arguments, sort_keys=True, default=str),
+                    )
+                    seen_calls[signature] = seen_calls.get(signature, 0) + 1
+                    if seen_calls[signature] > 2:
+                        stuck = call.get("name") or "?"
+                        self.history.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": call.get("id", ""),
+                                "name": call.get("name", ""),
+                                "content": json.dumps(
+                                    {
+                                        "error": "Identical call already ran twice; "
+                                        "not executed again. Answer with what you have."
+                                    }
+                                ),
+                            }
+                        )
+                        break
                     if self.on_tool:
                         self.on_tool(call.get("name", "?"), arguments)
                     output = self.runner.run(call.get("name", ""), arguments)
@@ -105,6 +133,15 @@ class Agent:
                             "content": output,
                         }
                     )
+                if stuck:
+                    answer = (
+                        "I stopped because `%s` repeated the same call without "
+                        "progress. Nothing was lost — tell me what to try instead, "
+                        "or narrow the request." % stuck
+                    )
+                    self.history.append({"role": "assistant", "content": answer})
+                    self.db.add_message(self.session, "assistant", answer, now())
+                    return answer
                 continue
 
             answer = (response.get("content") or "").strip()

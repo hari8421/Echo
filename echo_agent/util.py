@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Iterable, List, Union
+
+TMP_SUFFIX = ".echo-tmp"
 
 
 def now() -> str:
@@ -42,3 +46,12 @@ def trim(text: str, limit: int) -> str:
 
 def word_count(text: str) -> int:
     return len(re.findall(r"\S+", text))
+
+
+def write_atomic(path: Path, text: str) -> None:
+    """Write via a temp file and rename, so a crash never truncates a document."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name("." + path.name + TMP_SUFFIX)
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(str(tmp), str(path))

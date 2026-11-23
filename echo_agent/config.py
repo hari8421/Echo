@@ -45,6 +45,8 @@ class Config:
     embed_model: str = ""
     temperature: float = 0.3
     max_tool_steps: int = 12
+    llm_retries: int = 2
+    llm_retry_delay: float = 1.0
     auto_memory: bool = True
     docs_dir_name: str = "docs"
     outbox_dir_name: str = "outbox"
@@ -77,6 +79,14 @@ class Config:
             max_steps = int(os.environ.get("ECHO_MAX_TOOL_STEPS", "12"))
         except ValueError:
             max_steps = 12
+        try:
+            retries = int(os.environ.get("ECHO_LLM_RETRIES", "2"))
+        except ValueError:
+            retries = 2
+        try:
+            retry_delay = float(os.environ.get("ECHO_LLM_RETRY_DELAY", "1"))
+        except ValueError:
+            retry_delay = 1.0
 
         return cls(
             home=home,
@@ -87,6 +97,8 @@ class Config:
             embed_model=os.environ.get("ECHO_EMBED_MODEL", "").strip(),
             temperature=temperature,
             max_tool_steps=max(1, max_steps),
+            llm_retries=max(0, retries),
+            llm_retry_delay=max(0.0, retry_delay),
             auto_memory=_truthy(os.environ.get("ECHO_AUTO_MEMORY", "1")),
         )
 
@@ -117,6 +129,7 @@ class Config:
             "model:    %s" % self.model,
             "endpoint: %s" % self.base_url,
             "embed:    %s" % (self.embed_model or "(keyword search only)"),
+            "retries:  %d (backoff %.1fs)" % (self.llm_retries, self.llm_retry_delay),
             "docs:     %s" % self.docs_dir,
             "outbox:   %s" % self.outbox_dir,
         ]

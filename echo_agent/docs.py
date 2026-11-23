@@ -11,7 +11,7 @@ from typing import List, Optional, Tuple
 from . import embeddings
 from .config import Config
 from .db import Database
-from .util import now, normalize_tags, slugify, word_count
+from .util import normalize_tags, now, slugify, word_count, write_atomic
 
 MARKER = "\n---\n"
 
@@ -229,8 +229,8 @@ class DocStore:
         stamp = now()
         clean_tags = normalize_tags(tags)
         path = self.cfg.docs_dir / (doc_id + ".md")
-        path.write_text(
-            render_doc(title, clean_tags, stamp, stamp, body or ""), encoding="utf-8"
+        write_atomic(
+            path, render_doc(title, clean_tags, stamp, stamp, body or "")
         )
         self._index_path(path, doc_id, force=True)
         return Doc(
@@ -266,9 +266,8 @@ class DocStore:
         new_title = (title or doc.title).strip()
         new_tags = doc.tags if tags is None else normalize_tags(tags)
         new_body = doc.body if body is None else body.strip()
-        path.write_text(
-            render_doc(new_title, new_tags, doc.created_at, now(), new_body),
-            encoding="utf-8",
+        write_atomic(
+            path, render_doc(new_title, new_tags, doc.created_at, now(), new_body)
         )
         self._index_path(path, doc.id, force=True)
         updated = self.get(doc.id)

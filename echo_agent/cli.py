@@ -6,11 +6,13 @@ import argparse
 import os
 import platform
 import shlex
+import sqlite3
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
+from . import heal, ui
 from .agent import Agent
 from .config import Config
 from .db import Database
@@ -38,10 +40,19 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("init", help="Create the workspace and show next steps.").set_defaults(func=cmd_init)
-    sub.add_parser("doctor", help="Check the model server, database and workspace.").set_defaults(func=cmd_doctor)
+    doctor = sub.add_parser("doctor", help="Check the model server, database and workspace.")
+    doctor.add_argument("--fix", action="store_true", help="Repair workspace problems it finds.")
+    doctor.set_defaults(func=cmd_doctor)
+
+    sub.add_parser("repair", help="Heal the workspace: folders, index, database.").set_defaults(func=cmd_repair)
 
     chat = sub.add_parser("chat", help="Talk to the agent with tools enabled.")
     chat.set_defaults(func=cmd_chat)
+
+    ui_cmd = sub.add_parser("ui", help="Serve the local web interface.")
+    ui_cmd.add_argument("--port", type=int, default=8765)
+    ui_cmd.add_argument("--host", default="127.0.0.1", help="Bind address (default: localhost only).")
+    ui_cmd.set_defaults(func=cmd_ui)
 
     ask = sub.add_parser("ask", help="Answer a question from your documents.")
     ask.add_argument("question", nargs="+")
@@ -140,8 +151,22 @@ def main(argv=None) -> int:
         db = Database(cfg.db_path)
         store = DocStore(cfg, db)
         memory = MemoryStore(db)
+        if db.recovered_from:
+            print(
+                "note: the database was unreadable; moved it to %s and rebuilding the index."
+                % db.recovered_from,
+                file=sys.stderr,
+            )
+            store.rebuild()
         return args.func(args, cfg, db, store, memory)
     except (DocError, LLMError, ResearchError, SocialError, CLIError, ValueError) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+    except sqlite3.DatabaseError as exc:
+        print("error: database problem: %s" % exc, file=sys.stderr)
+        print("Try `echo-ai repair` (your markdown files are untouched).", file=sys.stderr)
+        return 1
+    except OSError as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 1
     except KeyboardInterrupt:
@@ -202,6 +227,7 @@ def cmd_init(args, cfg, db, store, memory) -> int:
     print("  2. Verify everything:      echo-ai doctor")
     print("  3. Create a first note:    echo-ai new \"My first note\"")
     print("  4. Start the assistant:    echo-ai chat")
+    print("     or the web UI:          echo-ai ui")
     return 0
 
 
@@ -235,8 +261,65 @@ def cmd_doctor(args, cfg, db, store, memory) -> int:
         print("     " + str(exc).replace("\n", "\n     "))
         failures += 1
 
+    problems = heal.check(cfg, db, store)
+    if problems:
+        print()
+        for problem in problems:
+            print("[!!] " + problem)
+        if getattr(args, "fix", False):
+            actions = heal.repair(cfg, db, store)
+            print()
+            for action in actions or ["nothing needed repair"]:
+                print("[fixed] " + action)
+            problems = heal.check(cfg, db, store)
+        else:
+            print("     run: echo-ai doctor --fix   (or: echo-ai repair)")
+    else:
+        print("[ok] workspace consistent")
+    if problems:
+        failures += len(problems)
+
     print("\n%s" % ("Ready." if failures == 0 else "%d issue(s) to fix." % failures))
     return 0 if failures == 0 else 1
+
+
+def cmd_repair(args, cfg, db, store, memory) -> int:
+    problems = heal.check(cfg, db, store)
+    if not problems:
+        print("Workspace is already healthy: %s" % cfg.home)
+        return 0
+    print("Found %d problem(s):" % len(problems))
+    for problem in problems:
+        print("  - " + problem)
+    actions = heal.repair(cfg, db, store)
+    print("\nRepairs:")
+    for action in actions or ["nothing needed repair"]:
+        print("  - " + action)
+    remaining = heal.check(cfg, db, store)
+    if remaining:
+        print("\nStill broken:")
+        for problem in remaining:
+            print("  ! " + problem)
+        return 1
+    print("\nWorkspace healthy again. Documents were not modified.")
+    return 0
+
+
+def cmd_ui(args, cfg, db, store, memory) -> int:
+    if args.host not in {"127.0.0.1", "localhost", "::1"}:
+        print(
+            "warning: the UI has no login. Only bind to %s on a network you trust."
+            % args.host,
+            file=sys.stderr,
+        )
+    try:
+        ui.run(cfg, host=args.host, port=args.port)
+    except OSError as exc:
+        raise CLIError(
+            "cannot listen on %s:%d (%s). Try --port %d."
+            % (args.host, args.port, exc, args.port + 1)
+        )
+    return 0
 
 
 def cmd_chat(args, cfg, db, store, memory) -> int:
