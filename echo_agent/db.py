@@ -35,6 +35,12 @@ CREATE TABLE IF NOT EXISTS memories (
     source TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT 'New chat',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session TEXT NOT NULL,
@@ -42,6 +48,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session, id);
 """
 
 FTS_SCHEMA = """
@@ -312,7 +319,45 @@ class Database:
         row = self.conn.execute("SELECT COUNT(*) AS n FROM docs").fetchone()
         return int(row["n"]) if row else 0
 
-    # -- transcript --------------------------------------------------------
+    # -- sessions/transcript -----------------------------------------------
+    def upsert_session(self, session: str, title: str, created_at: str, updated_at: str) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO sessions (id, title, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at
+            """,
+            (session, title, created_at, updated_at),
+        )
+        self.conn.commit()
+
+    def session(self, session: str) -> Optional[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM sessions WHERE id=?", (session,)).fetchone()
+
+    def sessions(self, limit: int = 50) -> List[sqlite3.Row]:
+        return list(
+            self.conn.execute(
+                "SELECT * FROM sessions ORDER BY updated_at DESC, created_at DESC LIMIT ?",
+                (max(1, limit),),
+            ).fetchall()
+        )
+
+    def session_messages(self, session: str, limit: int = 200) -> List[sqlite3.Row]:
+        rows = list(
+            self.conn.execute(
+                "SELECT * FROM messages WHERE session=? ORDER BY id DESC LIMIT ?",
+                (session, max(1, limit)),
+            ).fetchall()
+        )
+        rows.reverse()
+        return rows
+
+    def delete_session(self, session: str) -> bool:
+        self.conn.execute("DELETE FROM messages WHERE session=?", (session,))
+        cur = self.conn.execute("DELETE FROM sessions WHERE id=?", (session,))
+        self.conn.commit()
+        return cur.rowcount > 0
+
     def add_message(self, session: str, role: str, content: str, created_at: str) -> None:
         self.conn.execute(
             "INSERT INTO messages (session, role, content, created_at) VALUES (?, ?, ?, ?)",

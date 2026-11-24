@@ -20,28 +20,20 @@ from .util import now, trim
 def build_system_prompt(cfg: Config, db: Database, memory: MemoryStore) -> str:
     today = datetime.now().astimezone().strftime("%A, %d %B %Y")
     lines = [
-        "You are Echo, a local-first personal assistant running on the user's machine.",
-        "Today is %s. The user's workspace is %s." % (today, cfg.home),
-        "You can read and write their markdown document library, keep long-term "
-        "memory, research the web, and draft social posts.",
+        "You are Echo, a local-first AI assistant running on the user's machine.",
+        "Today is %s. Workspace: %s." % (today, cfg.home),
+        "You can read/write markdown docs, keep long-term memory, research the web, and draft social posts.",
         "",
         "How to work:",
-        "- Call tools instead of guessing about the user's documents or memories.",
-        "- Search or read before answering questions about their notes, and cite "
-        "document titles.",
+        "- Call tools instead of guessing about documents or memories.",
+        "- Search or read before answering questions about notes; cite document titles.",
         "- Prefer appending to a related existing document over creating duplicates.",
-        "- Save anything worth keeping as a markdown document with useful tags.",
-        "- Store durable facts and preferences with remember. Never store passwords, "
-        "API keys or other secrets.",
-        "- For social posts always use draft_social_post. It writes to an outbox for "
-        "review; you cannot publish, so never claim you did.",
-        "- Be concise and specific. Ask one short question only if the request is "
-        "genuinely ambiguous.",
-        "- Tools return JSON. On an {\"error\": ...} result, read it, change your "
-        "arguments or choose another tool. Never repeat an identical failing call.",
-        "- Work in small steps so a failure is cheap: create or search first, then "
-        "edit. If a step fails, continue from what you already know rather than "
-        "starting over.",
+        "- Save useful outputs as markdown documents with meaningful tags.",
+        "- Store durable facts/preferences with remember. Never store passwords, API keys, or secrets.",
+        "- For social posts use draft_social_post. It writes to outbox for review; never claim you published.",
+        "- Be concise, specific, and practical. Ask a short question only when truly ambiguous.",
+        "- Tools return JSON. On {\"error\": ...}, read it, adjust, and try a different approach. Never repeat identical failing calls.",
+        "- Work in small steps so failures are cheap.",
         "",
         "Library: %d document(s). Memory: %d item(s)." % (db.doc_count(), memory.count()),
     ]
@@ -51,6 +43,9 @@ def build_system_prompt(cfg: Config, db: Database, memory: MemoryStore) -> str:
         lines.append("Relevant long-term memory (newest first):")
         for item in recent:
             lines.append("- [%s] %s" % (item.kind, trim(item.text, 240)))
+    extra = (cfg.system_prompt or "").strip()
+    if extra:
+        lines.extend(["", "User instructions:", extra])
     return "\n".join(lines)
 
 
@@ -63,6 +58,8 @@ class Agent:
         memory: MemoryStore,
         llm: Optional[LLM] = None,
         on_tool=None,
+        session: Optional[str] = None,
+        title: str = "New chat",
     ):
         self.cfg = cfg
         self.db = db
@@ -72,8 +69,49 @@ class Agent:
         self.runner = ToolRunner(cfg, db, store, memory, self.llm)
         self.retriever = Retriever(cfg, db)
         self.on_tool = on_tool
-        self.session = "chat-" + datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.session = session or "chat-" + datetime.now().strftime("%Y%m%d-%H%M%S")
         self.history: List[dict] = []
+        stamp = now()
+        row = self.db.session(self.session)
+        self.title = title or (row["title"] if row else "New chat")
+        self.db.upsert_session(
+            self.session,
+            self.title,
+            row["created_at"] if row else stamp,
+            stamp,
+        )
+
+    @classmethod
+    def load(
+        cls,
+        cfg: Config,
+        db: Database,
+        store: DocStore,
+        memory: MemoryStore,
+        session: str,
+        llm: Optional[LLM] = None,
+        on_tool=None,
+    ) -> "Agent":
+        row = db.session(session)
+        agent = cls(
+            cfg,
+            db,
+            store,
+            memory,
+            llm=llm,
+            on_tool=on_tool,
+            session=session,
+            title=row["title"] if row else "New chat",
+        )
+        for msg in db.session_messages(session):
+            if msg["role"] in {"user", "assistant"}:
+                agent.history.append({"role": msg["role"], "content": msg["content"] or ""})
+        return agent
+
+    def _touch(self, title: Optional[str] = None) -> None:
+        if title and (self.title == "New chat" or not self.title):
+            self.title = trim(title, 80)
+        self.db.upsert_session(self.session, self.title, now(), now())
 
     def chat(self, text: str) -> str:
         text = (text or "").strip()
@@ -82,6 +120,7 @@ class Agent:
         self.store.sync()
         self.history.append({"role": "user", "content": text})
         self.db.add_message(self.session, "user", text, now())
+        self._touch(text)
 
         seen_calls: Dict[str, int] = {}
         for _step in range(self.cfg.max_tool_steps):
@@ -141,6 +180,7 @@ class Agent:
                     )
                     self.history.append({"role": "assistant", "content": answer})
                     self.db.add_message(self.session, "assistant", answer, now())
+                    self._touch()
                     return answer
                 continue
 
@@ -149,6 +189,7 @@ class Agent:
                 answer = "The model returned an empty reply. Try again or rephrase."
             self.history.append({"role": "assistant", "content": answer})
             self.db.add_message(self.session, "assistant", answer, now())
+            self._touch()
             return answer
 
         return (

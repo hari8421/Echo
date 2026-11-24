@@ -19,8 +19,8 @@ no cloud database, no telemetry. There is a CLI and a small local web UI.
 | **Organize** | Suggests tags for untagged docs, finds near-duplicates, groups by tag, flags stale notes, and can file docs into tag folders. |
 | **Research** | Web search, page reading, and a sourced markdown briefing saved to your library. |
 | **Social drafts** | Platform-aware posts and threads (X, LinkedIn, Bluesky, Threads, Instagram, Facebook, Reddit) saved to an outbox. **Nothing is published automatically.** |
-| **Chat agent** | A tool-calling assistant that can use all of the above in one conversation. |
-| **Web UI** | A local page for chat, the document library, grounded Q&A, memory and the outbox. |
+| **Chat agent** | A tool-calling assistant that can use all of the above in one conversation, with persistent chat sessions. |
+| **Web UI** | A local dashboard for chat sessions, docs, grounded Q&A, memory, outbox, and runtime settings. |
 | **Self-healing** | Retries transient model failures, writes documents atomically, and repairs a damaged index or workspace. |
 
 ## Requirements
@@ -248,9 +248,10 @@ echo-ai ui --port 9000
 echo-ai ui --host 0.0.0.0       # only on a network you trust
 ```
 
-Tabs: **Chat** (full agent with a tool trace per reply), **Documents** (list,
-read and edit markdown, create new ones), **Ask docs** (grounded answer plus
-sources), **Memory** (add and forget) and **Outbox** (read and approve drafts).
+Tabs/views: **Chat** (persistent sessions, tool trace, new/delete chat),
+**Documents** (create/read/edit/archive markdown), **Ask docs** (grounded answer
+plus sources), **Memory** (add/forget), **Outbox** (view/approve drafts), and
+**Settings** (save model/provider/prompt to `$ECHO_HOME/.env`, test model).
 A banner appears if `echo-ai repair` has something to fix.
 
 The page is one embedded HTML file with vanilla JavaScript; every piece of
@@ -266,6 +267,8 @@ echo-ai doctor [--fix]             check model server, index, workspace; --fix r
 echo-ai repair                     heal folders, index and database
 echo-ai chat                       interactive agent with tools
 echo-ai ui [--host H] [--port N]   local web interface
+echo-ai config [--set K=V ...]     show/save config in $ECHO_HOME/.env
+echo-ai sessions [--limit N]       list chat sessions
 
 echo-ai new "Title" [--tag work]   create a doc (body from $EDITOR/stdin/--content)
 echo-ai read <id|title>            print a doc
@@ -363,6 +366,9 @@ Set environment variables, or put them in `.env` (project root) or
 | `ECHO_LLM_RETRIES` | `2` | Retries for transient model failures |
 | `ECHO_LLM_RETRY_DELAY` | `1` | Base backoff in seconds (doubles per retry) |
 | `ECHO_AUTO_MEMORY` | `1` | Extract memories when a chat ends |
+| `ECHO_SYSTEM_PROMPT` | empty | Extra instructions appended to the agent system prompt |
+| `ECHO_UI_HOST` | `127.0.0.1` | Default host for `echo-ai ui` |
+| `ECHO_UI_PORT` | `8765` | Default port for `echo-ai ui` |
 
 ### Optional semantic search
 

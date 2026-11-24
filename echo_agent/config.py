@@ -48,6 +48,9 @@ class Config:
     llm_retries: int = 2
     llm_retry_delay: float = 1.0
     auto_memory: bool = True
+    system_prompt: str = ""
+    ui_host: str = "127.0.0.1"
+    ui_port: int = 8765
     docs_dir_name: str = "docs"
     outbox_dir_name: str = "outbox"
     archive_dir_name: str = "archive"
@@ -88,6 +91,10 @@ class Config:
         except ValueError:
             retry_delay = 1.0
 
+        try:
+            ui_port = int(os.environ.get("ECHO_UI_PORT", "8765"))
+        except ValueError:
+            ui_port = 8765
         return cls(
             home=home,
             provider=provider,
@@ -100,6 +107,9 @@ class Config:
             llm_retries=max(0, retries),
             llm_retry_delay=max(0.0, retry_delay),
             auto_memory=_truthy(os.environ.get("ECHO_AUTO_MEMORY", "1")),
+            system_prompt=os.environ.get("ECHO_SYSTEM_PROMPT", "").strip(),
+            ui_host=os.environ.get("ECHO_UI_HOST", "127.0.0.1").strip() or "127.0.0.1",
+            ui_port=max(1, ui_port),
         )
 
     @property

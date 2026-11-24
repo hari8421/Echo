@@ -50,9 +50,17 @@ def build_parser() -> argparse.ArgumentParser:
     chat.set_defaults(func=cmd_chat)
 
     ui_cmd = sub.add_parser("ui", help="Serve the local web interface.")
-    ui_cmd.add_argument("--port", type=int, default=8765)
-    ui_cmd.add_argument("--host", default="127.0.0.1", help="Bind address (default: localhost only).")
+    ui_cmd.add_argument("--port", type=int, default=None)
+    ui_cmd.add_argument("--host", default=None, help="Bind address (default: localhost only).")
     ui_cmd.set_defaults(func=cmd_ui)
+
+    cfg_cmd = sub.add_parser("config", help="Show or update configuration in $ECHO_HOME/.env.")
+    cfg_cmd.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="Set config value (provider,model,base_url,api_key,embed_model,temperature,max_tool_steps,auto_memory,system_prompt,ui_host,ui_port)")
+    cfg_cmd.set_defaults(func=cmd_config)
+
+    sessions = sub.add_parser("sessions", help="List chat sessions.")
+    sessions.add_argument("--limit", type=int, default=20)
+    sessions.set_defaults(func=cmd_sessions)
 
     ask = sub.add_parser("ask", help="Answer a question from your documents.")
     ask.add_argument("question", nargs="+")
@@ -306,19 +314,62 @@ def cmd_repair(args, cfg, db, store, memory) -> int:
 
 
 def cmd_ui(args, cfg, db, store, memory) -> int:
-    if args.host not in {"127.0.0.1", "localhost", "::1"}:
+    host = args.host or cfg.ui_host
+    port = args.port if args.port is not None else cfg.ui_port
+    if host not in {"127.0.0.1", "localhost", "::1"}:
         print(
-            "warning: the UI has no login. Only bind to %s on a network you trust."
-            % args.host,
+            "warning: the UI has no login. Only bind to %s on a network you trust." % host,
             file=sys.stderr,
         )
     try:
-        ui.run(cfg, host=args.host, port=args.port)
+        ui.run(cfg, host=host, port=port)
     except OSError as exc:
-        raise CLIError(
-            "cannot listen on %s:%d (%s). Try --port %d."
-            % (args.host, args.port, exc, args.port + 1)
-        )
+        raise CLIError("cannot listen on %s:%d (%s). Try --port %d." % (host, port, exc, port + 1))
+    return 0
+
+
+def cmd_config(args, cfg, db, store, memory) -> int:
+    env_path = cfg.home / ".env"
+    key_map = {
+        "provider": "ECHO_PROVIDER", "model": "ECHO_MODEL", "base_url": "ECHO_BASE_URL", "api_key": "ECHO_API_KEY",
+        "embed_model": "ECHO_EMBED_MODEL", "temperature": "ECHO_TEMPERATURE", "max_tool_steps": "ECHO_MAX_TOOL_STEPS",
+        "auto_memory": "ECHO_AUTO_MEMORY", "system_prompt": "ECHO_SYSTEM_PROMPT", "ui_host": "ECHO_UI_HOST", "ui_port": "ECHO_UI_PORT",
+    }
+    updates = {}
+    for item in args.set:
+        if "=" not in item:
+            raise CLIError("Invalid --set %r, expected KEY=VALUE." % item)
+        k, _, v = item.partition("=")
+        k = k.strip().lower()
+        if k not in key_map:
+            raise CLIError("Unknown config key %r." % k)
+        updates[k] = v.strip()
+    if updates:
+        existing = {}
+        if env_path.exists():
+            for raw in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                ek, _, ev = line.partition("=")
+                existing[ek.strip()] = ev.strip()
+        for k, v in updates.items():
+            existing[key_map[k]] = v
+        env_path.write_text("".join("%s=%s\n" % (k, existing[k]) for k in sorted(existing)), encoding="utf-8")
+        print("Saved %d setting(s) to %s" % (len(updates), env_path))
+    print(cfg.summary())
+    if cfg.api_key:
+        print("api_key:  (set)")
+    return 0
+
+
+def cmd_sessions(args, cfg, db, store, memory) -> int:
+    rows = db.sessions(max(1, args.limit))
+    if not rows:
+        print("No chat sessions yet.")
+        return 0
+    for row in rows:
+        print("%s  %s  %s" % (row["id"], row["updated_at"][:16].replace("T", " "), trim(row["title"], 60)))
     return 0
 
 
