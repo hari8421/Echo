@@ -211,6 +211,13 @@ def serve(cfg: Config, host: str = "127.0.0.1", port: int = 8765) -> HTTPServer:
                 except LLMError as exc:
                     self._send(400, {"error": str(exc)})
                 return
+            if parsed.path == "/api/browser/status":
+                try:
+                    from .browser import get_session
+                    self._send(200, get_session().status())
+                except Exception as exc:
+                    self._send(400, {"error": str(exc)})
+                return
             if parsed.path == "/api/doc":
                 doc_id = parse_qs(parsed.query).get("id", [""])[0]
                 doc = workspace().store.get(doc_id)
@@ -252,6 +259,13 @@ def serve(cfg: Config, host: str = "127.0.0.1", port: int = 8765) -> HTTPServer:
                 "/api/outbox/show",
                 "/api/outbox/approve",
                 "/api/config",
+                "/api/browser/start",
+                "/api/browser/stop",
+                "/api/browser/goto",
+                "/api/browser/snapshot",
+                "/api/browser/click",
+                "/api/browser/fill",
+                "/api/browser/press",
             }:
                 self._send(404, {"error": "Not found."})
                 return
@@ -383,7 +397,6 @@ def serve(cfg: Config, host: str = "127.0.0.1", port: int = 8765) -> HTTPServer:
                             else:
                                 existing[env_k] = str(v)
                         env_path.write_text("".join("%s=%s\n" % (k, existing[k]) for k in sorted(existing)), encoding="utf-8")
-                        # apply to current process config
                         for k, v in updates.items():
                             setattr(cfg, k, v)
                         if "base_url" in updates:
@@ -402,6 +415,29 @@ def serve(cfg: Config, host: str = "127.0.0.1", port: int = 8765) -> HTTPServer:
                     "ui_port": cfg.ui_port,
                     "saved": bool(data),
                 })
+                return
+            if path.startswith("/api/browser/"):
+                from .browser import get_session, BrowserError
+                try:
+                    bs = get_session()
+                    if path == "/api/browser/start":
+                        self._send(200, bs.start(headless=bool(data.get("headless", False)), profile_dir=str(data.get("profile_dir") or "")))
+                    elif path == "/api/browser/stop":
+                        self._send(200, bs.close())
+                    elif path == "/api/browser/goto":
+                        self._send(200, bs.goto(str(data.get("url") or "")))
+                    elif path == "/api/browser/snapshot":
+                        self._send(200, bs.snapshot(limit=int(data.get("limit") or 80)))
+                    elif path == "/api/browser/click":
+                        self._send(200, bs.click(str(data.get("ref") or "")))
+                    elif path == "/api/browser/fill":
+                        self._send(200, bs.fill(str(data.get("ref") or ""), str(data.get("text") or ""), submit=bool(data.get("submit"))))
+                    elif path == "/api/browser/press":
+                        self._send(200, bs.press(str(data.get("key") or "")))
+                    else:
+                        self._send(404, {"error": "Not found."})
+                except BrowserError as exc:
+                    self._send(400, {"error": str(exc)})
                 return
 
     class Server(HTTPServer):
@@ -527,6 +563,7 @@ pre.out{margin:10px 0 0;background:#101722;border:1px solid var(--edge);padding:
       <button data-tab="chat" class="on"><span>Chat</span><span class="count" id="nav-sessions">0</span></button>
       <button data-tab="docs"><span>Documents</span><span class="count" id="nav-docs">0</span></button>
       <button data-tab="ask"><span>Ask docs</span><span class="count">RAG</span></button>
+      <button data-tab="browser"><span>Browser</span><span class="count" id="nav-browser">off</span></button>
       <button data-tab="memory"><span>Memory</span><span class="count" id="nav-mem">0</span></button>
       <button data-tab="outbox"><span>Outbox</span><span class="count" id="nav-drafts">0</span></button>
       <button data-tab="settings"><span>Settings</span><span class="count">local</span></button>
@@ -580,6 +617,24 @@ pre.out{margin:10px 0 0;background:#101722;border:1px solid var(--edge);padding:
         </div>
       </div></section>
 
+      <section class="panel" id="panel-browser"><div class="detail">
+        <div class="card"><h3>Browser agent (Playwright)</h3><p>Optional. Install: <code>pip install -e .[browser]</code> then <code>python -m playwright install chromium</code>. Use a persistent profile to reuse logins.</p>
+          <div class="row" style="margin-top:12px">
+            <input type="text" id="browser-profile" class="grow" placeholder="Optional profile dir, e.g. ~/.echo/browser-profile">
+            <label class="small"><input type="checkbox" id="browser-headless"> headless</label>
+            <button class="btn primary" id="browser-start">Start</button>
+            <button class="btn ghost" id="browser-stop">Stop</button>
+            <button class="btn ghost" id="browser-status-btn">Status</button>
+          </div>
+        </div>
+        <div class="card"><h3>Navigate & act</h3>
+          <div class="row"><input type="text" id="browser-url" class="grow" placeholder="https://x.com/home"><button class="btn primary" id="browser-goto">Go</button><button class="btn ghost" id="browser-snap">Snapshot</button></div>
+          <div class="row" style="margin-top:10px"><input type="text" id="browser-ref" style="width:120px" placeholder="ref e12"><input type="text" id="browser-text" class="grow" placeholder="Text to fill / key to press"><button class="btn ghost" id="browser-click">Click</button><button class="btn ghost" id="browser-fill">Fill</button><button class="btn ghost" id="browser-press">Press</button></div>
+          <div class="small" id="browser-info" style="margin-top:10px">Browser not started.</div>
+        </div>
+        <div class="card"><h3>Snapshot</h3><pre class="out" id="browser-out">No snapshot yet.</pre></div>
+      </div></section>
+
       <section class="panel" id="panel-memory"><div class="detail">
         <div class="card"><h3>Add memory</h3><p>Store durable facts, preferences, projects, decisions.</p>
           <div class="row" style="margin-top:12px">
@@ -631,7 +686,7 @@ async function api(path, body){
 function setTab(tab){
   document.querySelectorAll('.nav button[data-tab]').forEach(b=>b.classList.toggle('on', b.dataset.tab===tab));
   document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('on', p.id==='panel-'+tab));
-  const titles={chat:['Chat','Local agent with tools, docs, memory, research, and drafts.'],docs:['Documents','Plain markdown files in your Echo workspace.'],ask:['Ask docs','Grounded answers from your document library.'],memory:['Memory','Durable facts the agent can recall.'],outbox:['Outbox','Review drafts before you post anything manually.'],settings:['Settings','Configure local model/provider and agent behavior.']};
+  const titles={chat:['Chat','Local agent with tools, docs, memory, research, and drafts.'],docs:['Documents','Plain markdown files in your Echo workspace.'],ask:['Ask docs','Grounded answers from your document library.'],browser:['Browser','Control a local Playwright browser for agent actions.'],memory:['Memory','Durable facts the agent can recall.'],outbox:['Outbox','Review drafts before you post anything manually.'],settings:['Settings','Configure local model/provider and agent behavior.']};
   $('view-title').textContent=titles[tab][0]; $('view-sub').textContent=titles[tab][1];
   if(tab==='docs') renderDocs();
 }
@@ -761,6 +816,19 @@ $('test-model-btn').addEventListener('click', async ()=>{
   catch(e){ $('diag').innerHTML='<span class="status-bad">Failed:</span> '+esc(e.message); $('cfg-status').textContent='Model test failed'; }
 });
 
+async function browserStatus(){
+  try{ const d=await api('/api/browser/status'); $('nav-browser').textContent=d.running?'on':'off'; $('browser-info').textContent=d.running?('Running · '+(d.title||d.url||'')): 'Browser not started.'; return d; }
+  catch(e){ $('nav-browser').textContent='off'; $('browser-info').textContent=e.message; return null; }
+}
+$('browser-start').addEventListener('click', async ()=>{ try{ const d=await api('/api/browser/start',{headless:$('browser-headless').checked, profile_dir:$('browser-profile').value.trim()}); $('browser-info').textContent='Running · '+(d.url||''); $('nav-browser').textContent='on'; }catch(e){ $('browser-info').textContent=e.message; }});
+$('browser-stop').addEventListener('click', async ()=>{ try{ await api('/api/browser/stop',{}); $('nav-browser').textContent='off'; $('browser-info').textContent='Browser stopped.'; }catch(e){ $('browser-info').textContent=e.message; }});
+$('browser-status-btn').addEventListener('click', browserStatus);
+$('browser-goto').addEventListener('click', async ()=>{ try{ const d=await api('/api/browser/goto',{url:$('browser-url').value.trim()}); $('browser-info').textContent=d.title+' · '+d.url; }catch(e){ $('browser-info').textContent=e.message; }});
+$('browser-snap').addEventListener('click', async ()=>{ try{ const d=await api('/api/browser/snapshot',{limit:80}); $('browser-out').textContent=JSON.stringify(d,null,2); $('browser-info').textContent=d.title+' · '+d.url; }catch(e){ $('browser-info').textContent=e.message; }});
+$('browser-click').addEventListener('click', async ()=>{ try{ const d=await api('/api/browser/click',{ref:$('browser-ref').value.trim()}); $('browser-info').textContent='Clicked '+d.clicked+' · '+d.url; }catch(e){ $('browser-info').textContent=e.message; }});
+$('browser-fill').addEventListener('click', async ()=>{ try{ const d=await api('/api/browser/fill',{ref:$('browser-ref').value.trim(), text:$('browser-text').value, submit:false}); $('browser-info').textContent='Filled '+d.filled+' · '+d.url; }catch(e){ $('browser-info').textContent=e.message; }});
+$('browser-press').addEventListener('click', async ()=>{ try{ const d=await api('/api/browser/press',{key:$('browser-text').value.trim()||'Enter'}); $('browser-info').textContent='Pressed '+d.pressed+' · '+d.url; }catch(e){ $('browser-info').textContent=e.message; }});
+
 async function refresh(){
   try{
     const d=await api('/api/state'+(state.session?('?session='+encodeURIComponent(state.session)):''));
@@ -770,6 +838,7 @@ async function refresh(){
     renderSessions(); renderMessages(); renderMemory(); renderOutbox(); renderSettings(); if($('panel-docs').classList.contains('on')) renderDocs();
   }catch(e){ $('side-meta').textContent=e.message; }
   try{ const h=await api('/api/health'); const b=$('banner'); if(h.problems && h.problems.length){ b.textContent='Workspace issue: '+h.problems.join('; ')+' — run echo-ai repair'; b.classList.add('on'); } else b.classList.remove('on'); }catch(_){ }
+  browserStatus();
 }
 refresh();
 </script>

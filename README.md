@@ -19,8 +19,9 @@ no cloud database, no telemetry. There is a CLI and a small local web UI.
 | **Organize** | Suggests tags for untagged docs, finds near-duplicates, groups by tag, flags stale notes, and can file docs into tag folders. |
 | **Research** | Web search, page reading, and a sourced markdown briefing saved to your library. |
 | **Social drafts** | Platform-aware posts and threads (X, LinkedIn, Bluesky, Threads, Instagram, Facebook, Reddit) saved to an outbox. **Nothing is published automatically.** |
-| **Chat agent** | A tool-calling assistant that can use all of the above in one conversation, with persistent chat sessions. |
-| **Web UI** | A local dashboard for chat sessions, docs, grounded Q&A, memory, outbox, and runtime settings. |
+| **Browser agent** | Optional Playwright tools for local browser control: open pages, snapshot refs, click/fill/press/scroll/screenshot. Can act on your behalf when you command it. |
+| **Chat agent** | A tool-calling assistant with persistent sessions, docs/memory/research/social/browser tools. |
+| **Web UI / App** | Local dashboard for chat, docs, ask, browser, memory, outbox, settings; can run as web UI or standalone desktop window. |
 | **Self-healing** | Retries transient model failures, writes documents atomically, and repairs a damaged index or workspace. |
 
 ## Requirements
@@ -40,6 +41,11 @@ ollama pull llama3.2
 # 2. Install the CLI
 pip install -e .
 
+# Optional extras
+pip install -e .[browser]   # browser automation (Playwright)
+python -m playwright install chromium
+pip install -e .[desktop]   # standalone desktop window (pywebview)
+
 # 3. Create the workspace and verify everything
 echo-ai init
 echo-ai doctor
@@ -49,6 +55,7 @@ echo-ai new "Project kickoff"          # opens $EDITOR
 echo-ai ask "What did I decide about pricing?"
 echo-ai chat
 echo-ai ui                             # http://127.0.0.1:8765
+echo-ai app                            # standalone desktop window
 ```
 
 Without installing, use `python -m echo_agent ...` with the same arguments.
@@ -240,19 +247,26 @@ echo-ai doctor --fix    # check, then repair what it found
 echo-ai repair          # repair and report, exit 1 if anything remains broken
 ```
 
-## Web UI
+## Web UI / Standalone App
 
 ```bash
 echo-ai ui                      # http://127.0.0.1:8765
 echo-ai ui --port 9000
 echo-ai ui --host 0.0.0.0       # only on a network you trust
+echo-ai app                     # standalone desktop window (needs pywebview)
 ```
 
-Tabs/views: **Chat** (persistent sessions, tool trace, new/delete chat),
-**Documents** (create/read/edit/archive markdown), **Ask docs** (grounded answer
-plus sources), **Memory** (add/forget), **Outbox** (view/approve drafts), and
-**Settings** (save model/provider/prompt to `$ECHO_HOME/.env`, test model).
-A banner appears if `echo-ai repair` has something to fix.
+Tabs/views: **Chat** (persistent sessions, tool trace), **Documents**,
+**Ask docs**, **Browser** (Playwright status/goto/snapshot/click/fill/press),
+**Memory**, **Outbox**, and **Settings**. Settings can save model/provider/prompt
+to `$ECHO_HOME/.env` and test model connectivity.
+
+### Browser automation (act on your behalf)
+
+- Install: `pip install -e .[browser] && python -m playwright install chromium`
+- Agent tools: `browser_start`, `browser_goto`, `browser_snapshot`, `browser_click`, `browser_fill`, `browser_press`, `browser_scroll`, `browser_screenshot`, `browser_close`.
+- Use a persistent `profile_dir` to reuse logins/cookies locally.
+- Echo can make posts/react/click when you command it; be explicit for irreversible actions. Prefer reviewing important posts before submitting.
 
 The page is one embedded HTML file with vanilla JavaScript; every piece of
 document or model text is inserted with `textContent`, so content cannot inject

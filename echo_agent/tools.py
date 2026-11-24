@@ -6,6 +6,7 @@ import json
 from typing import Any, Dict
 
 from . import organize, research, social
+from . import browser as browser_mod
 from .config import Config
 from .db import Database
 from .docs import DocStore
@@ -153,6 +154,23 @@ TOOL_SPECS = [
         ["platform", "topic"],
     ),
     _tool("list_outbox", "List social drafts in the outbox with their status.", {}),
+    _tool(
+        "browser_start",
+        "Start a local browser automation session (Playwright). Use before browser actions. Set headless=false to watch/intervene.",
+        {
+            "headless": {"type": "boolean"},
+            "profile_dir": {"type": "string", "description": "Optional persistent browser profile dir to reuse logins."},
+        },
+    ),
+    _tool("browser_status", "Get browser session status.", {}),
+    _tool("browser_goto", "Navigate browser to a URL.", {"url": {"type": "string"}}, ["url"]),
+    _tool("browser_snapshot", "Get page title/url/text and interactive elements with refs (e1,e2,...). Run after navigation or changes.", {"limit": {"type": "integer"}}),
+    _tool("browser_click", "Click an element ref from browser_snapshot.", {"ref": {"type": "string"}}, ["ref"]),
+    _tool("browser_fill", "Fill text into an element ref. Optionally submit with Enter.", {"ref": {"type": "string"}, "text": {"type": "string"}, "submit": {"type": "boolean"}}, ["ref", "text"]),
+    _tool("browser_press", "Press a keyboard key in the browser (Enter, Tab, Control+A etc).", {"key": {"type": "string"}}, ["key"]),
+    _tool("browser_scroll", "Scroll the page vertically.", {"dy": {"type": "integer"}}),
+    _tool("browser_screenshot", "Save a browser screenshot and return its path.", {"path": {"type": "string"}}),
+    _tool("browser_close", "Close the browser session.", {}),
 ]
 
 
@@ -345,3 +363,34 @@ class ToolRunner:
         for draft in drafts:
             draft.pop("body", None)
         return {"count": len(drafts), "drafts": drafts}
+
+    # -- browser -----------------------------------------------------------
+    def _tool_browser_start(self, headless: bool = False, profile_dir: str = ""):
+        return browser_mod.get_session().start(headless=_as_bool(headless), profile_dir=str(profile_dir or ""))
+
+    def _tool_browser_status(self):
+        return browser_mod.get_session().status()
+
+    def _tool_browser_goto(self, url: str):
+        return browser_mod.get_session().goto(url)
+
+    def _tool_browser_snapshot(self, limit: int = 80):
+        return browser_mod.get_session().snapshot(limit=_as_int(limit, 80))
+
+    def _tool_browser_click(self, ref: str):
+        return browser_mod.get_session().click(ref)
+
+    def _tool_browser_fill(self, ref: str, text: str, submit: bool = False):
+        return browser_mod.get_session().fill(ref, text, submit=_as_bool(submit))
+
+    def _tool_browser_press(self, key: str):
+        return browser_mod.get_session().press(key)
+
+    def _tool_browser_scroll(self, dy: int = 800):
+        return browser_mod.get_session().scroll(_as_int(dy, 800))
+
+    def _tool_browser_screenshot(self, path: str = ""):
+        return browser_mod.get_session().screenshot(path)
+
+    def _tool_browser_close(self):
+        return browser_mod.get_session().close()

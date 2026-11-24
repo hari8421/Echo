@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 
 from . import heal, ui
+from . import desktop
 from .agent import Agent
 from .config import Config
 from .db import Database
@@ -53,6 +54,11 @@ def build_parser() -> argparse.ArgumentParser:
     ui_cmd.add_argument("--port", type=int, default=None)
     ui_cmd.add_argument("--host", default=None, help="Bind address (default: localhost only).")
     ui_cmd.set_defaults(func=cmd_ui)
+
+    app_cmd = sub.add_parser("app", help="Launch Echo as a standalone desktop window (requires .[desktop]).")
+    app_cmd.add_argument("--port", type=int, default=None)
+    app_cmd.add_argument("--host", default=None)
+    app_cmd.set_defaults(func=cmd_app)
 
     cfg_cmd = sub.add_parser("config", help="Show or update configuration in $ECHO_HOME/.env.")
     cfg_cmd.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="Set config value (provider,model,base_url,api_key,embed_model,temperature,max_tool_steps,auto_memory,system_prompt,ui_host,ui_port)")
@@ -323,6 +329,18 @@ def cmd_ui(args, cfg, db, store, memory) -> int:
         )
     try:
         ui.run(cfg, host=host, port=port)
+    except OSError as exc:
+        raise CLIError("cannot listen on %s:%d (%s). Try --port %d." % (host, port, exc, port + 1))
+    return 0
+
+
+def cmd_app(args, cfg, db, store, memory) -> int:
+    host = args.host or cfg.ui_host
+    port = args.port if args.port is not None else cfg.ui_port
+    try:
+        desktop.run(cfg, host=host, port=port)
+    except desktop.DesktopError as exc:
+        raise CLIError(str(exc))
     except OSError as exc:
         raise CLIError("cannot listen on %s:%d (%s). Try --port %d." % (host, port, exc, port + 1))
     return 0
