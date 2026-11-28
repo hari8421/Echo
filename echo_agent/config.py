@@ -47,6 +47,9 @@ class Config:
     max_tool_steps: int = 12
     llm_retries: int = 2
     llm_retry_delay: float = 1.0
+    context_chars: int = 14000
+    context_summary_chars: int = 1800
+    browser_auto_install: bool = True
     auto_memory: bool = True
     system_prompt: str = ""
     ui_host: str = "127.0.0.1"
@@ -90,6 +93,14 @@ class Config:
             retry_delay = float(os.environ.get("ECHO_LLM_RETRY_DELAY", "1"))
         except ValueError:
             retry_delay = 1.0
+        try:
+            context_chars = int(os.environ.get("ECHO_CONTEXT_CHARS", "14000"))
+        except ValueError:
+            context_chars = 14000
+        try:
+            summary_chars = int(os.environ.get("ECHO_CONTEXT_SUMMARY_CHARS", "1800"))
+        except ValueError:
+            summary_chars = 1800
 
         try:
             ui_port = int(os.environ.get("ECHO_UI_PORT", "8765"))
@@ -106,6 +117,9 @@ class Config:
             max_tool_steps=max(1, max_steps),
             llm_retries=max(0, retries),
             llm_retry_delay=max(0.0, retry_delay),
+            context_chars=max(2000, context_chars),
+            context_summary_chars=max(200, summary_chars),
+            browser_auto_install=_truthy(os.environ.get("ECHO_BROWSER_AUTO_INSTALL", "1")),
             auto_memory=_truthy(os.environ.get("ECHO_AUTO_MEMORY", "1")),
             system_prompt=os.environ.get("ECHO_SYSTEM_PROMPT", "").strip(),
             ui_host=os.environ.get("ECHO_UI_HOST", "127.0.0.1").strip() or "127.0.0.1",
@@ -140,6 +154,8 @@ class Config:
             "endpoint: %s" % self.base_url,
             "embed:    %s" % (self.embed_model or "(keyword search only)"),
             "retries:  %d (backoff %.1fs)" % (self.llm_retries, self.llm_retry_delay),
+            "context:  %d chars (summary %d)" % (self.context_chars, self.context_summary_chars),
+            "browser:  %s" % ("auto-install on start" if self.browser_auto_install else "manual"),
             "docs:     %s" % self.docs_dir,
             "outbox:   %s" % self.outbox_dir,
         ]

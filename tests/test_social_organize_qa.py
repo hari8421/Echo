@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from echo_agent.config import Config
 from echo_agent.db import Database
@@ -8,7 +9,13 @@ from echo_agent.docs import DocStore
 from echo_agent.memory import MemoryStore
 from echo_agent.organize import analyze, apply
 from echo_agent.qa import ask_from_docs
-from echo_agent.research import extract_text, parse_search_html
+from echo_agent.research import (
+    ResearchError,
+    extract_text,
+    parse_bing_html,
+    parse_search_html,
+    web_search,
+)
 from echo_agent.retrieval import Retriever
 from echo_agent.social import draft_post, list_drafts, read_draft, set_status
 
@@ -108,6 +115,45 @@ class ResearchParsingTests(unittest.TestCase):
         self.assertEqual(results[0].url, "https://example.com/page")
         self.assertEqual(results[0].title, "Example page")
         self.assertIn("short snippet", results[0].snippet)
+
+    def test_parse_bing_results(self):
+        markup = """
+        <ol id="b_results">
+          <li class="b_algo">
+            <h2><a href="https://www.bing.com/ck/a?u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS9wYWdl"
+              >Example <strong>page</strong></a></h2>
+            <div class="b_caption"><p class="b_lineclamp2">A short snippet about the page.</p></div>
+          </li>
+        </ol>
+        """
+        results = parse_bing_html(markup)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].url, "https://example.com/page")
+        self.assertEqual(results[0].title, "Example page")
+        self.assertIn("short snippet", results[0].snippet)
+
+    def test_web_search_falls_back_to_duckduckgo(self):
+        ddg_markup = (
+            '<a class="result__a" href="https://example.com/fallback">Fallback page</a>'
+            '<a class="result__snippet">Fallback snippet</a>'
+        )
+
+        def fake_fetch(url, data=None):
+            if "bing.com" in url:
+                raise OSError("blocked")
+            return ddg_markup
+
+        with patch("echo_agent.research._fetch", side_effect=fake_fetch):
+            results = web_search("a query", limit=5)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].url, "https://example.com/fallback")
+
+    def test_web_search_reports_all_provider_failures(self):
+        with patch("echo_agent.research._fetch", side_effect=OSError("offline")):
+            with self.assertRaises(ResearchError) as caught:
+                web_search("a query")
+        self.assertIn("Bing", str(caught.exception))
+        self.assertIn("DuckDuckGo", str(caught.exception))
 
     def test_extract_text_drops_scripts(self):
         title, text = extract_text(

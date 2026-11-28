@@ -1,0 +1,78 @@
+name: Build Echo desktop apps
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macOS Apple Silicon
+            script: build:mac:arm64
+            artifact: macos-arm64
+          - os: macos-15-intel
+            name: macOS Intel
+            script: build:mac:x64
+            artifact: macos-intel
+          - os: windows-latest
+            name: Windows
+            script: build:win
+            artifact: windows
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install Python build dependencies
+        run: python -m pip install --upgrade pip pyinstaller playwright
+
+      - name: Install app dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Check app code
+        working-directory: desktop
+        run: npm run check
+
+      - name: Test app code
+        working-directory: desktop
+        run: npm test
+
+      - name: Test agent
+        run: python -m unittest discover -s tests -t . -v
+
+      - name: Build standalone app
+        working-directory: desktop
+        run: npm run ${{ matrix.script }}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: echo-${{ matrix.artifact }}
+          if-no-files-found: error
+          path: |
+            dist/app/*.dmg
+            dist/app/*.zip
+            dist/app/*.exe

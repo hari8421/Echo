@@ -21,7 +21,7 @@ no cloud database, no telemetry. There is a CLI and a small local web UI.
 | **Social drafts** | Platform-aware posts and threads (X, LinkedIn, Bluesky, Threads, Instagram, Facebook, Reddit) saved to an outbox. **Nothing is published automatically.** |
 | **Browser agent** | Optional Playwright tools for local browser control: open pages, snapshot refs, click/fill/press/scroll/screenshot. Can act on your behalf when you command it. |
 | **Chat agent** | A tool-calling assistant with persistent sessions, docs/memory/research/social/browser tools. |
-| **Web UI / App** | Local dashboard for chat, docs, ask, browser, memory, outbox, settings; can run as web UI or standalone desktop window. |
+| **Web UI / App** | Local dashboard for chat, docs, ask, browser, memory, outbox, settings; also a native standalone app for macOS and Windows. |
 | **Self-healing** | Retries transient model failures, writes documents atomically, and repairs a damaged index or workspace. |
 
 ## Requirements
@@ -273,6 +273,34 @@ document or model text is inserted with `textContent`, so content cannot inject
 markup. There is no login: keep the default localhost binding unless you control
 the network.
 
+### Native desktop app (macOS and Windows)
+
+`desktop/` is a separate Electron UI for the same agent. It has native menus,
+shortcuts, a session sidebar and a dedicated renderer; the Python agent runs as
+a bundled local sidecar, so the packaged app needs no Python or Node on the
+user's machine. On first launch it detects LM Studio on port 1234 and lets you
+choose a loaded model. Settings can also point at Ollama or any
+OpenAI-compatible endpoint. Long chats are compacted into a short summary before
+the context budget is exceeded; transient model failures are retried with
+backoff. Chromium for the browser tools is installed at backend startup if it is
+missing, and its progress appears in the Browser view. The chat composer can
+attach text files to a question; web search uses Bing with DuckDuckGo as a
+fallback.
+
+```bash
+cd desktop
+npm install && npm start         # development (uses system Python)
+
+python3 -m pip install pyinstaller playwright
+npm run build:mac                # .dmg + .zip for this Mac's architecture
+npm run build:win                # .exe installer + portable .exe (on Windows)
+```
+
+Apple Silicon, Intel macOS and Windows are built on native runners by
+`.github/workflows/build-desktop.yml` on `v*` tags or via `workflow_dispatch`;
+unsigned macOS builds need right-click → Open on first launch. See
+`desktop/README.md` for details.
+
 ## Commands
 
 ```text
@@ -471,8 +499,12 @@ echo_agent/
 ├── llm.py          model client, error classification, retries
 ├── embeddings.py   optional embeddings
 ├── config.py       environment configuration
+├── sidecar.py      headless API process for the native app
 └── util.py         shared helpers (including atomic writes)
 ```
+
+`desktop/` next to this package contains the native macOS/Windows UI,
+sidecar packaging and build scripts.
 
 ## Limitations
 

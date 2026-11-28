@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import html
 import re
 import urllib.error
@@ -9,7 +10,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from typing import List
+from typing import List, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .config import Config
@@ -110,31 +111,137 @@ def parse_search_html(markup: str) -> List[SearchResult]:
     return parser.results
 
 
-def web_search(query: str, limit: int = 5) -> List[SearchResult]:
-    data = urllib.parse.urlencode({"q": query}).encode("utf-8")
+def _bing_url(href: str) -> str:
+    """Undo Bing's ``/ck/a?u=a1<base64url>`` redirect wrapper."""
+    href = html.unescape(href or "")
+    parsed = urlparse(href)
+    if "bing.com" in parsed.netloc:
+        encoded = parse_qs(parsed.query).get("u", [""])[0]
+        if encoded.startswith("a1"):
+            try:
+                value = encoded[2:]
+                value += "=" * (-len(value) % 4)
+                target = base64.urlsafe_b64decode(value).decode("utf-8")
+                if target.startswith("http"):
+                    return target
+            except Exception:
+                pass
+    return href if href.startswith("http") else ""
+
+
+class _BingParser(HTMLParser):
+    """Read the result blocks Bing serves at ``/search``."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.results: List[SearchResult] = []
+        self._current: Optional[SearchResult] = None
+        self._mode = ""
+        self._buffer: List[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        classes = attributes.get("class", "")
+        if tag == "li" and "b_algo" in classes:
+            self._current = SearchResult(title="", url="")
+            self._mode = ""
+            self._buffer = []
+            return
+        if self._current is None:
+            return
+        if tag == "h2":
+            self._flush()
+            self._mode = "title"
+        elif tag == "a" and self._mode == "title" and not self._current.url:
+            self._current.url = _bing_url(attributes.get("href", ""))
+        elif tag == "p":
+            self._flush()
+            self._mode = "snippet"
+
+    def handle_endtag(self, tag):
+        if self._current is None:
+            return
+        if (tag == "h2" and self._mode == "title") or (tag == "p" and self._mode == "snippet"):
+            self._flush()
+        elif tag == "li":
+            self._flush()
+            if self._current.url and self._current.title:
+                self.results.append(self._current)
+            self._current = None
+            self._mode = ""
+
+    def handle_data(self, data):
+        if self._mode:
+            self._buffer.append(data)
+
+    def _flush(self):
+        if not self._mode or self._current is None:
+            return
+        text = re.sub(r"\s+", " ", "".join(self._buffer)).strip()
+        if text:
+            if self._mode == "title" and not self._current.title:
+                self._current.title = text
+            elif self._mode == "snippet" and not self._current.snippet:
+                self._current.snippet = text
+        self._mode = ""
+        self._buffer = []
+
+
+def parse_bing_html(markup: str) -> List[SearchResult]:
+    parser = _BingParser()
+    parser.feed(markup)
+    parser.close()
+    return parser.results
+
+
+def _fetch(url: str, data: bytes = None) -> str:
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    if data is not None:
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
     request = urllib.request.Request(
-        "https://html.duckduckgo.com/html/",
-        data=data,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept-Language": "en-US,en;q=0.9",
-        },
-        method="POST",
+        url, data=data, headers=headers, method="POST" if data is not None else "GET"
     )
+    with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+        return response.read().decode("utf-8", errors="replace")
+
+
+def web_search(query: str, limit: int = 5) -> List[SearchResult]:
+    """Search the web, trying providers in order until one returns results."""
+    limit = max(1, min(int(limit or 5), 20))
+    failures: List[str] = []
+
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
-            markup = response.read().decode("utf-8", errors="replace")
-    except (urllib.error.URLError, TimeoutError) as exc:
-        raise ResearchError(
-            "Web search failed (%s). Check your connection and try again." % exc
-        ) from exc
-    results = parse_search_html(markup)
-    if not results:
-        raise ResearchError(
-            "The search engine returned no results. Try a more specific topic."
+        markup = _fetch(
+            "https://www.bing.com/search",
+            urllib.parse.urlencode({"q": query, "count": max(10, limit * 2)}).encode("utf-8"),
         )
-    return results[:limit]
+        results = parse_bing_html(markup)
+        if results:
+            return results[:limit]
+        failures.append("Bing returned no results")
+    except (OSError, ValueError) as exc:
+        failures.append("Bing: %s" % exc)
+
+    # DuckDuckGo is kept as a fallback: it works from some networks/regions.
+    try:
+        markup = _fetch(
+            "https://html.duckduckgo.com/html/",
+            urllib.parse.urlencode({"q": query}).encode("utf-8"),
+        )
+        results = parse_search_html(markup)
+        if results:
+            return results[:limit]
+        failures.append("DuckDuckGo returned no results")
+    except (OSError, ValueError) as exc:
+        failures.append("DuckDuckGo: %s" % exc)
+
+    raise ResearchError(
+        "Web search found nothing for %r (%s). Try a shorter query or check your connection."
+        % (query[:80], "; ".join(failures))
+    )
 
 
 class _TextExtractor(HTMLParser):

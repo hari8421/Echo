@@ -48,12 +48,21 @@ class SessionUITests(unittest.TestCase):
         self.assertEqual(state["config"]["provider"], "ollama")
 
     def test_config_save_and_read(self):
-        data = self._post("/api/config", {"model": "llama3.1", "temperature": 0.2, "auto_memory": False})
+        data = self._post("/api/config", {
+            "model": "llama3.1", "temperature": 0.2, "auto_memory": False,
+            "llm_retries": 3, "context_chars": 9000, "browser_auto_install": False,
+        })
         self.assertTrue(data["saved"])
         self.assertEqual(data["model"], "llama3.1")
+        self.assertEqual(data["llm_retries"], 3)
+        self.assertEqual(data["context_chars"], 9000)
+        self.assertFalse(data["browser_auto_install"])
         env = (self.cfg.home / ".env").read_text(encoding="utf-8")
         self.assertIn("ECHO_MODEL=llama3.1", env)
         self.assertIn("ECHO_AUTO_MEMORY=0", env)
+        self.assertIn("ECHO_LLM_RETRIES=3", env)
+        self.assertIn("ECHO_CONTEXT_CHARS=9000", env)
+        self.assertIn("ECHO_BROWSER_AUTO_INSTALL=0", env)
 
     def test_new_and_delete_session(self):
         new = self._post("/api/chat/new", {})

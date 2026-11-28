@@ -16,6 +16,10 @@ from .retrieval import Retriever
 from .tools import TOOL_SPECS, ToolRunner
 from .util import now, trim
 
+# Rough character budget for the tool schema, subtracted from the conversation
+# budget so a long schema cannot silently push the model past its context.
+TOOLS_CHARS = len(json.dumps(TOOL_SPECS, default=str))
+
 
 def build_system_prompt(cfg: Config, db: Database, memory: MemoryStore) -> str:
     today = datetime.now().astimezone().strftime("%A, %d %B %Y")
@@ -48,6 +52,35 @@ def build_system_prompt(cfg: Config, db: Database, memory: MemoryStore) -> str:
     if extra:
         lines.extend(["", "User instructions:", extra])
     return "\n".join(lines)
+
+
+def _message_chars(message: dict) -> int:
+    content = str(message.get("content") or "")
+    calls = json.dumps(message.get("tool_calls") or [], default=str)
+    return len(content) + len(calls) + 80
+
+
+def _history_chars(history: List[dict]) -> int:
+    return sum(_message_chars(message) for message in history)
+
+
+def _shrink_history(history: List[dict], budget: int) -> List[dict]:
+    """Last-resort bounded history used when a single turn is itself too big."""
+    caps = {"user": 6000, "assistant": 5000, "tool": 3500}
+    kept = []
+    for message in reversed(history):
+        clone = dict(message)
+        clone["content"] = trim(str(clone.get("content") or ""), caps.get(clone.get("role", ""), 4000))
+        kept.append(clone)
+        if _history_chars(kept) >= budget:
+            break
+    kept.reverse()
+    while kept and kept[0].get("role") != "user":
+        kept.pop(0)
+    if kept:
+        return kept
+    last = history[-1] if history else {"role": "user", "content": ""}
+    return [{"role": "user", "content": trim(str(last.get("content") or ""), max(500, budget))}]
 
 
 class Agent:
@@ -124,10 +157,11 @@ class Agent:
         self._touch(text)
 
         seen_calls: Dict[str, int] = {}
+        system_prompt = build_system_prompt(self.cfg, self.db, self.memory)
         for _step in range(self.cfg.max_tool_steps):
-            messages = [
-                {"role": "system", "content": build_system_prompt(self.cfg, self.db, self.memory)}
-            ] + self._trimmed_history()
+            messages = [{"role": "system", "content": system_prompt}] + self._trimmed_history(
+                len(system_prompt) + TOOLS_CHARS
+            )
             response = self.llm.chat(messages, tools=TOOL_SPECS)
             calls = response.get("tool_calls") or []
             if calls:
@@ -198,11 +232,72 @@ class Agent:
             "request." % self.cfg.max_tool_steps
         )
 
-    def _trimmed_history(self) -> List[dict]:
-        history = self.history[-40:]
+    def _trimmed_history(self, reserved_chars: int = 0) -> List[dict]:
+        """Keep the conversation inside the configured character budget.
+
+        Older turns are summarized once with the model (a deterministic extract
+        is used if that call fails), while the recent turns stay verbatim. The
+        summary is kept in memory only — the full transcript remains in the
+        session database and in the UI.
+        """
+        history = list(self.history)
         while history and history[0].get("role") != "user":
             history.pop(0)
+
+        budget = max(2000, self.cfg.context_chars - reserved_chars)
+        if _history_chars(history) <= budget:
+            return history
+
+        keep = min(len(history), max(6, self.cfg.max_tool_steps * 2))
+        start = max(0, len(history) - keep)
+        while start > 0 and history[start].get("role") != "user":
+            start -= 1
+
+        if start == 0:
+            # One very long turn (often a tool result) is the only thing left.
+            history = _shrink_history(history, budget)
+        else:
+            summary = {"role": "user", "content": self._summarize(history[:start]), "compact": True}
+            recent = history[start:]
+            tail_budget = max(500, budget - _message_chars(summary))
+            history = [summary] + _shrink_history(recent, tail_budget)
+
+        self.history = history
         return history
+
+    def _summarize(self, older: List[dict]) -> str:
+        lines = []
+        for message in older:
+            role = message.get("role")
+            if role not in {"user", "assistant"}:
+                continue
+            content = str(message.get("content") or "").strip()
+            if content:
+                lines.append("%s: %s" % ("User" if role == "user" else "Echo", trim(content, 600)))
+        if not lines:
+            return "[Earlier conversation summary]\n(no user-visible turns to summarize)"
+
+        prompt = (
+            "Summarize the earlier part of a conversation for an assistant picking "
+            "up where it left off. Keep durable facts, decisions, names, document "
+            "titles, unfinished tasks and conclusions. Drop small talk and repeated "
+            "tool output. Return 3-8 short bullets, no preamble.\n\n"
+            + "\n".join(lines[-40:])
+        )
+        text = ""
+        try:
+            response = self.llm.chat(
+                [
+                    {"role": "system", "content": "You compress conversation context. Output bullets only."},
+                    {"role": "user", "content": prompt},
+                ]
+            )
+            text = str(response.get("content") or "").strip()
+        except LLMError:
+            pass
+        if not text:
+            text = "\n".join("- " + trim(line, 240) for line in lines[-12:])
+        return "[Earlier conversation summary]\n" + trim(text, self.cfg.context_summary_chars)
 
     def extract_memories(self, limit: int = 5) -> List[Memory]:
         """After a session, ask the model which durable facts are worth keeping."""

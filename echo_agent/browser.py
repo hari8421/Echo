@@ -15,7 +15,11 @@ from __future__ import annotations
 import base64
 import json
 import os
+import platform
 import re
+import subprocess
+import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +39,23 @@ def _require_playwright():
             "and then: python -m playwright install chromium"
         ) from exc
     return sync_playwright
+
+
+# Playwright's sync API binds an asyncio loop to the thread that starts it and
+# refuses a second start on that thread. Echo's HTTP server handles every
+# request on one thread, so keep a single manager for that thread and reuse it
+# across browser_start / stop / tool calls. Never stop it between sessions.
+_PW_LOCAL = threading.local()
+
+
+def _get_playwright():
+    pw = getattr(_PW_LOCAL, "pw", None)
+    if pw is None:
+        sync_playwright = _require_playwright()
+        _prepare_browsers_env(_playwright_package_dir())
+        pw = sync_playwright().start()
+        _PW_LOCAL.pw = pw
+    return pw
 
 
 @dataclass
@@ -58,25 +79,44 @@ class BrowserSession:
     def start(self, headless: bool = False, profile_dir: str = "") -> Dict[str, Any]:
         if self.state is not None:
             return self.status()
-        sync_playwright = _require_playwright()
-        pw = sync_playwright().start()
+        pw = _get_playwright()
         profile_dir = (profile_dir or "").strip()
-        if profile_dir:
-            path = Path(profile_dir).expanduser()
-            path.mkdir(parents=True, exist_ok=True)
-            context = pw.chromium.launch_persistent_context(
-                user_data_dir=str(path),
-                headless=bool(headless),
-                viewport={"width": 1280, "height": 900},
-            )
-            browser = context.browser
-            page = context.pages[0] if context.pages else context.new_page()
-            self.state = BrowserState(pw, browser, context, page, bool(headless), str(path))
-        else:
-            browser = pw.chromium.launch(headless=bool(headless))
-            context = browser.new_context(viewport={"width": 1280, "height": 900})
-            page = context.new_page()
-            self.state = BrowserState(pw, browser, context, page, bool(headless), "")
+        resolved_profile = ""
+        context = None
+        browser = None
+        try:
+            if profile_dir:
+                path = Path(profile_dir).expanduser()
+                path.mkdir(parents=True, exist_ok=True)
+                resolved_profile = str(path)
+                context = pw.chromium.launch_persistent_context(
+                    user_data_dir=resolved_profile,
+                    headless=bool(headless),
+                    viewport={"width": 1280, "height": 900},
+                )
+                browser = context.browser
+                page = context.pages[0] if context.pages else context.new_page()
+            else:
+                browser = pw.chromium.launch(headless=bool(headless))
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+        except Exception as exc:
+            # A half-started session must not leave the shared Playwright loop
+            # unusable for the next request. Close whatever was created.
+            for obj in (context, browser):
+                try:
+                    if obj is not None:
+                        obj.close()
+                except Exception:
+                    pass
+            message = str(exc)
+            if "executable doesn't exist" in message.lower():
+                message = (
+                    "Chromium is not installed yet. Wait for the background install in the "
+                    "Browser view, or click Install browser. " + message
+                )
+            raise BrowserError("Cannot start browser: " + message[:500]) from exc
+        self.state = BrowserState(pw, browser, context, page, bool(headless), resolved_profile)
         return self.status()
 
     def _page(self):
@@ -102,11 +142,11 @@ class BrowserSession:
         state = self.state
         self.state = None
         errors = []
-        for obj, label in [(state.context, "context"), (state.browser, "browser"), (state.playwright, "playwright")]:
+        # Keep the shared Playwright manager alive: restarting its sync loop on
+        # this thread would raise "using Playwright Sync API inside the asyncio loop".
+        for obj, label in [(state.context, "context"), (state.browser, "browser")]:
             try:
-                if label == "playwright":
-                    obj.stop()
-                else:
+                if obj is not None:
                     obj.close()
             except Exception as exc:
                 errors.append("%s: %s" % (label, exc))
@@ -239,3 +279,243 @@ _SESSION = BrowserSession()
 
 def get_session() -> BrowserSession:
     return _SESSION
+
+
+# -- Chromium bootstrap ----------------------------------------------------
+# Playwright's Python package is bundled with the desktop sidecar. Its browser
+# binary is large and platform-specific, so it is installed into the user's
+# Playwright cache the first time the backend starts instead of bloating the
+# app download.
+
+# Reentrant: ensure_browser_installed() updates status while holding the lock.
+_INSTALL_LOCK = threading.RLock()
+_INSTALL_THREAD: Optional[threading.Thread] = None
+_INSTALL = {
+    "status": "idle",  # idle | installing | installed | failed | skipped
+    "message": "",
+    "log": "",
+}
+_CACHED_EXECUTABLE: Optional[Path] = None
+
+
+def _home() -> Path:
+    return Path(os.environ.get("ECHO_HOME", "~/.echo")).expanduser()
+
+
+def _default_browsers_root() -> Path:
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "ms-playwright"
+    if sys.platform == "win32":
+        return Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "ms-playwright"
+    return Path.home() / ".cache" / "ms-playwright"
+
+
+def _playwright_browsers_root(package_dir: Path) -> Path:
+    override = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
+    if override and override != "0":
+        return Path(override).expanduser()
+    if override == "0":
+        return package_dir / "driver" / "package" / ".local-browsers"
+    return _default_browsers_root()
+
+
+def _playwright_package_dir() -> Path:
+    import playwright  # type: ignore
+
+    return Path(playwright.__file__).resolve().parent
+
+
+def _prepare_browsers_env(package_dir: Path) -> None:
+    """Keep Playwright's driver and our installer looking at the same browsers.
+
+    Playwright's pipe transport sets ``PLAYWRIGHT_BROWSERS_PATH=0`` when frozen,
+    which points at ``.local-browsers`` inside PyInstaller's temporary folder.
+    That folder is deleted on exit and the CLI installer does not use it, so the
+    driver would never find the Chromium we installed. Export the real cache
+    path instead whenever the sidecar is frozen.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    override = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
+    if override and override != "0":
+        return
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_default_browsers_root())
+
+
+def _chromium_executable(refresh: bool = False) -> tuple:
+    """Return (path, error) without starting Playwright's node driver.
+
+    Starting the driver just to read ``executable_path`` is slow and unreliable
+    from a one-file sidecar. The browser cache layout and revision are available
+    statically in Playwright's ``browsers.json``.
+    """
+    global _CACHED_EXECUTABLE
+    if not refresh and _CACHED_EXECUTABLE is not None:
+        return _CACHED_EXECUTABLE, ""
+    try:
+        package_dir = _playwright_package_dir()
+        _prepare_browsers_env(package_dir)
+        manifest = package_dir / "driver" / "package" / "browsers.json"
+        revision = None
+        if manifest.is_file():
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            for item in data.get("browsers", []):
+                if item.get("name") == "chromium":
+                    revision = str(item.get("revision") or "")
+                    break
+        if not revision:
+            return None, "Cannot find the Chromium revision in Playwright's browsers.json"
+        root = _playwright_browsers_root(package_dir)
+        if sys.platform == "darwin":
+            folder = "chrome-mac-arm64" if platform.machine() == "arm64" else "chrome-mac"
+            relative = "%s/%s/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing" % (
+                "chromium-" + revision, folder
+            )
+        elif sys.platform == "win32":
+            relative = "chromium-%s/chrome-win/chrome.exe" % revision
+        else:
+            relative = "chromium-%s/chrome-linux/chrome" % revision
+        _CACHED_EXECUTABLE = root / relative
+        return _CACHED_EXECUTABLE, ""
+    except Exception as exc:
+        return None, "Playwright is not installed (%s)" % exc
+
+
+def _set_install(status: str, message: str = "", log_path: Path = None) -> None:
+    with _INSTALL_LOCK:
+        _INSTALL["status"] = status
+        _INSTALL["message"] = message
+        if log_path is not None:
+            _INSTALL["log"] = str(log_path)
+
+
+def _install_command() -> List[str]:
+    if getattr(sys, "frozen", False):
+        # The sidecar executable knows how to run the bundled Playwright CLI.
+        return [sys.executable, "--install-browser"]
+    return [sys.executable, "-m", "playwright", "install", "chromium"]
+
+
+def _stream_command(command: List[str], record) -> int:
+    record("Running: " + " ".join(command))
+    with subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+    ) as process:
+        for line in process.stdout or []:
+            record(line)
+        return process.wait()
+
+
+def install_chromium_now() -> int:
+    """Run the Playwright browser installer in this process (frozen sidecars)."""
+    from playwright.__main__ import main  # type: ignore
+
+    _prepare_browsers_env(_playwright_package_dir())
+    original = sys.argv[:]
+    try:
+        sys.argv = ["playwright", "install", "chromium"]
+        main()
+        return 0
+    except SystemExit as exc:
+        return int(exc.code or 0)
+    finally:
+        sys.argv = original
+
+
+def _install_worker(home: Path) -> None:
+    log_path = home / "browser-install.log"
+    lines: List[str] = []
+
+    def record(line: str) -> None:
+        line = line.rstrip()
+        if not line:
+            return
+        lines.append(line)
+        if len(lines) > 60:
+            lines.pop(0)
+        _set_install("installing", line[-300:], log_path)
+
+    try:
+        home.mkdir(parents=True, exist_ok=True)
+        path, error = _chromium_executable()
+        if "Playwright is not installed" in error and not getattr(sys, "frozen", False):
+            record("Installing the Playwright package…")
+            code = _stream_command(
+                [sys.executable, "-m", "pip", "install", "--user", "playwright"], record
+            )
+            if code != 0:
+                record("Retrying without --user…")
+                code = _stream_command(
+                    [sys.executable, "-m", "pip", "install", "playwright"], record
+                )
+            if code != 0:
+                raise RuntimeError("Could not install the Playwright package.")
+        if "Playwright is not installed" not in error or not getattr(sys, "frozen", False):
+            code = _stream_command(_install_command(), record)
+            if code != 0:
+                raise RuntimeError("Browser installer exited with %d" % code)
+        path, error = _chromium_executable(refresh=True)
+        if error or path is None or not path.exists():
+            raise RuntimeError(error or "Playwright did not install a Chromium binary.")
+        _set_install("installed", "Chromium ready: %s" % path, log_path)
+    except Exception as exc:
+        _set_install("failed", str(exc), log_path)
+    finally:
+        try:
+            log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+
+
+def ensure_browser_installed(home: Path = None, enabled: bool = True, wait: bool = False) -> bool:
+    """Install Chromium in the background when it is missing.
+
+    Returns True when a usable Chromium is already present. Installation never
+    blocks the backend's HTTP server; poll ``browser_status()`` for progress.
+    """
+    global _INSTALL_THREAD
+    home = home or _home()
+    if not enabled:
+        _set_install("skipped", "Automatic browser installation is disabled.")
+        return False
+    path, error = _chromium_executable()
+    if path is not None and path.exists():
+        _set_install("installed", "Chromium ready: %s" % path)
+        return True
+
+    with _INSTALL_LOCK:
+        if _INSTALL["status"] == "installing" and _INSTALL_THREAD is not None:
+            thread = _INSTALL_THREAD
+        else:
+            _set_install("installing", "Installing Chromium in the background…", home / "browser-install.log")
+            _INSTALL_THREAD = threading.Thread(
+                target=_install_worker, args=(home,), name="echo-browser-install", daemon=True
+            )
+            _INSTALL_THREAD.start()
+            thread = _INSTALL_THREAD
+    if wait:
+        thread.join()
+    return _INSTALL["status"] == "installed"
+
+
+def browser_status() -> Dict[str, Any]:
+    """Session state plus browser installation diagnostics for the native UI."""
+    status = get_session().status()
+    path, error = _chromium_executable()
+    installed = path is not None and path.exists()
+    with _INSTALL_LOCK:
+        install = dict(_INSTALL)
+    if installed and install["status"] != "installing":
+        install["status"] = "installed"
+        install["message"] = "Chromium ready: %s" % path
+    elif not installed and install["status"] in {"idle", "installed"}:
+        install["status"] = "not-installed"
+        install["message"] = error or "Chromium has not been installed yet."
+    status.update(
+        {
+            "installed": installed,
+            "chromium_path": str(path) if path else "",
+            "install": install,
+        }
+    )
+    return status

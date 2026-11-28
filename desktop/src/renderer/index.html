@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'">
+<title>Echo</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<svg class="sprite" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-echo" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 16 0M7 12a5 5 0 0 1 10 0M10 12a2 2 0 0 1 4 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 15a3 3 0 0 1-3 3H9l-5 3V6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+  <symbol id="i-docs" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v4h4M9 12h6M9 16h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+  <symbol id="i-ask" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m16 16 5 5M9 11c.5-1.3 2.5-1.6 3.3-.5.8 1.2-.3 2.4-1.8 2.5.5 1.5 1 2 2 2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+  <symbol id="i-browser" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M3 9h18M7 6.5h.01M10 6.5h.01" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+  <symbol id="i-memory" viewBox="0 0 24 24"><path d="M12 21s-7-4.3-9-9a5 5 0 0 1 9-3 5 5 0 0 1 9 3c-2 4.7-9 9-9 9z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+  <symbol id="i-outbox" viewBox="0 0 24 24"><path d="M4 13h4l2 3h4l2-3h4v6H4zM4 13 6 5h12l2 8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6l1.4 1.4m10 10 1.4 1.4m0-12.8-1.4 1.4m-10 10-1.4 1.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2 6m2-6V5m0 6h-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7h6l2 2h10v10H3z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="m4 12 16-8-6 16-2.5-6.5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+
+  <symbol id="i-attach" viewBox="0 0 24 24"><path d="M20 11.5 12.6 19a5 5 0 0 1-7.1-7.1l8.6-8.6a3.3 3.3 0 0 1 4.7 4.7l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3m-9 0 1 14h10l1-14M10 11v6m4-6v6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+</svg>
+
+<div id="boot" class="boot screen">
+  <div class="boot-card">
+    <div class="boot-mark"><svg><use href="#i-echo"></use></svg></div>
+    <h1>Echo</h1>
+    <p id="boot-status">Starting your local agent…</p>
+    <pre id="boot-error" class="boot-error hidden"></pre>
+  </div>
+</div>
+
+<div id="setup" class="setup screen hidden">
+  <div class="setup-card">
+    <div class="setup-head">
+      <div class="boot-mark"><svg><use href="#i-echo"></use></svg></div>
+      <div>
+        <h1>Connect your model</h1>
+        <p>Echo uses the model already running on your machine. Nothing is uploaded.</p>
+      </div>
+    </div>
+    <div id="setup-detected" class="detected"></div>
+    <div class="form-grid">
+      <label>Provider
+        <select id="setup-provider">
+          <option value="openai">LM Studio / OpenAI-compatible</option>
+          <option value="ollama">Ollama</option>
+        </select>
+      </label>
+      <label>Model
+        <input id="setup-model" list="setup-model-list" placeholder="Choose a loaded model" autocomplete="off">
+        <datalist id="setup-model-list"></datalist>
+      </label>
+      <label class="wide">Endpoint
+        <input id="setup-base-url" type="text" spellcheck="false">
+      </label>
+      <label>API key <span class="muted">(usually blank)</span>
+        <input id="setup-api-key" type="password" placeholder="Optional">
+      </label>
+    </div>
+    <div class="setup-foot">
+      <span id="setup-error" class="error-text"></span>
+      <button id="setup-connect" class="btn primary">Connect and open Echo</button>
+    </div>
+    <p class="fineprint">Settings are saved to <code id="setup-home">~/.echo/.env</code> on this computer.</p>
+  </div>
+</div>
+
+<div id="app" class="app hidden">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark"><svg><use href="#i-echo"></use></svg></span>
+      <span class="brand-text"><strong>Echo</strong><small>Local agent workspace</small></span>
+    </div>
+    <button id="new-chat" class="btn primary block"><svg><use href="#i-plus"></use></svg> New chat</button>
+    <nav id="nav" class="nav">
+      <button data-tab="chat" class="active"><svg><use href="#i-chat"></use></svg><span>Chat</span><span class="count" id="count-chat">0</span></button>
+      <button data-tab="docs"><svg><use href="#i-docs"></use></svg><span>Documents</span><span class="count" id="count-docs">0</span></button>
+      <button data-tab="ask"><svg><use href="#i-ask"></use></svg><span>Ask docs</span></button>
+      <button data-tab="browser"><svg><use href="#i-browser"></use></svg><span>Browser</span><span class="count" id="count-browser">off</span></button>
+      <button data-tab="memory"><svg><use href="#i-memory"></use></svg><span>Memory</span><span class="count" id="count-memory">0</span></button>
+      <button data-tab="outbox"><svg><use href="#i-outbox"></use></svg><span>Outbox</span><span class="count" id="count-outbox">0</span></button>
+      <button data-tab="settings"><svg><use href="#i-settings"></use></svg><span>Settings</span></button>
+    </nav>
+    <div class="side-section">Recent sessions</div>
+    <div id="sessions" class="sessions"></div>
+    <div class="side-footer">
+      <div class="status"><span id="status-dot" class="dot"></span><span id="status-text">Connecting…</span></div>
+      <button id="open-workspace" class="link"><svg><use href="#i-folder"></use></svg> Open workspace folder</button>
+      <code id="workspace-path"></code>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">
+        <h1 id="view-title">Chat</h1>
+        <p id="view-subtitle">Your documents, memory and tools in one local conversation.</p>
+      </div>
+      <div class="top-actions">
+        <span id="model-pill" class="pill">model</span>
+        <button id="refresh" class="icon-btn" title="Refresh"><svg><use href="#i-refresh"></use></svg></button>
+        <button id="delete-chat" class="btn ghost sm">Delete chat</button>
+      </div>
+    </header>
+    <div id="banner" class="banner hidden"></div>
+
+    <div class="panels">
+      <section id="panel-chat" class="panel active">
+        <div class="chat-layout">
+          <div id="chat-messages" class="messages"></div>
+          <div class="composer">
+            <div id="attachment-chips" class="attachment-chips hidden"></div>
+            <div class="composer-box">
+              <button id="chat-attach" class="attach-btn" title="Attach text files"><svg><use href="#i-attach"></use></svg></button>
+              <textarea id="chat-input" rows="2" placeholder="Ask Echo to write, search, remember, research or draft…"></textarea>
+              <button id="chat-send" class="send-btn" title="Send"><svg><use href="#i-send"></use></svg></button>
+            </div>
+            <p class="hint">Attach text files (max 2 MB each) · Enter to send · Shift+Enter for a new line. Tool calls appear under each reply.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="panel-docs" class="panel">
+        <div class="split">
+          <div class="list-pane">
+            <div class="row list-actions">
+              <button id="new-doc" class="btn primary sm">New document</button>
+              <button id="archive-doc" class="btn ghost sm danger">Archive</button>
+            </div>
+            <div id="doc-list" class="list"></div>
+          </div>
+          <div class="detail">
+            <div class="detail-head"><h2>Document editor</h2><span id="doc-status" class="muted"></span></div>
+            <label>Title<input id="doc-title" type="text" placeholder="Untitled document"></label>
+            <label>Tags<input id="doc-tags" type="text" placeholder="work, planning"></label>
+            <label>Body<textarea id="doc-body" class="editor" spellcheck="true" placeholder="Write in Markdown…"></textarea></label>
+            <div class="row"><button id="save-doc" class="btn primary">Save document</button><span class="muted">Files live in your Echo workspace.</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="panel-ask" class="panel">
+        <div class="chat-layout">
+          <div id="ask-messages" class="messages"></div>
+          <div class="composer">
+            <div class="composer-box">
+              <textarea id="ask-input" rows="2" placeholder="Ask a question about your documents…"></textarea>
+              <button id="ask-send" class="send-btn" title="Ask"><svg><use href="#i-send"></use></svg></button>
+            </div>
+            <p class="hint">Answers are grounded in retrieved document excerpts with sources.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="panel-browser" class="panel">
+        <div class="detail wide-detail">
+          <div class="card">
+            <div class="detail-head"><h2>Browser agent</h2><span id="browser-status" class="muted">Not started</span></div>
+            <p class="muted">Playwright tools let Echo open pages and act on your command. Chromium is installed automatically at backend startup if it is missing.</p>
+            <div class="row">
+              <input id="browser-profile" type="text" class="grow" placeholder="Profile folder (optional, keeps logins)">
+              <label class="check"><input id="browser-headless" type="checkbox"> Headless</label>
+              <button id="browser-install" class="btn ghost sm">Install browser</button>
+              <button id="browser-start" class="btn primary sm">Start</button>
+              <button id="browser-stop" class="btn ghost sm">Stop</button>
+            </div>
+            <p id="browser-detail" class="muted">Checking browser installation…</p>
+          </div>
+          <div class="card">
+            <h2>Navigate and act</h2>
+            <div class="row"><input id="browser-url" type="text" class="grow" placeholder="https://example.com"><button id="browser-goto" class="btn sm">Go</button><button id="browser-snap" class="btn ghost sm">Snapshot</button></div>
+            <div class="row"><input id="browser-ref" type="text" placeholder="ref e12"><input id="browser-text" type="text" class="grow" placeholder="Text or key"><button id="browser-click" class="btn ghost sm">Click</button><button id="browser-fill" class="btn ghost sm">Fill</button><button id="browser-press" class="btn ghost sm">Press</button></div>
+          </div>
+          <div class="card"><h2>Output</h2><pre id="browser-out" class="output">No snapshot yet.</pre></div>
+        </div>
+      </section>
+
+      <section id="panel-memory" class="panel">
+        <div class="detail wide-detail">
+          <div class="card">
+            <h2>Remember something</h2>
+            <p class="muted">Durable facts, preferences and decisions the agent can recall.</p>
+            <div class="row">
+              <input id="mem-text" type="text" class="grow" placeholder="Prefers concise weekly updates">
+              <select id="mem-kind"><option>note</option><option>fact</option><option>preference</option><option>person</option><option>project</option><option>decision</option><option>task</option></select>
+              <button id="mem-add" class="btn primary sm">Remember</button>
+            </div>
+          </div>
+          <div id="mem-list" class="cards"></div>
+        </div>
+      </section>
+
+      <section id="panel-outbox" class="panel">
+        <div class="detail wide-detail"><div id="outbox-list" class="cards"></div></div>
+      </section>
+
+      <section id="panel-settings" class="panel">
+        <div class="detail wide-detail">
+          <div class="card">
+            <h2>Model connection</h2>
+            <p class="muted">Saved to <code id="settings-home">~/.echo/.env</code>. API keys are not shown back after saving.</p>
+            <div class="form-grid">
+              <label>Provider<select id="cfg-provider"><option value="ollama">Ollama</option><option value="openai">LM Studio / OpenAI-compatible</option></select></label>
+              <label>Model<input id="cfg-model" list="cfg-model-list" autocomplete="off"><datalist id="cfg-model-list"></datalist></label>
+              <label class="wide">Base URL<input id="cfg-base-url" type="text" spellcheck="false"></label>
+              <label>API key<input id="cfg-api-key" type="password" placeholder="Leave blank to keep unchanged"></label>
+              <label>Embedding model<input id="cfg-embed" type="text" placeholder="Optional"></label>
+            </div>
+          </div>
+          <div class="card">
+            <h2>Agent behavior</h2>
+            <div class="form-grid">
+              <label>Temperature<input id="cfg-temperature" type="number" step="0.1" min="0" max="2"></label>
+              <label>Max tool steps<input id="cfg-max-steps" type="number" step="1" min="1"></label>
+              <label>LLM retries<input id="cfg-retries" type="number" step="1" min="0" max="10"></label>
+              <label>Retry delay (seconds)<input id="cfg-retry-delay" type="number" step="0.5" min="0"></label>
+              <label>Context budget (characters)<input id="cfg-context" type="number" step="1000" min="2000"></label>
+              <label>Compact summary length<input id="cfg-context-summary" type="number" step="100" min="200"></label>
+              <label>Auto memory<select id="cfg-auto-memory"><option value="1">Enabled</option><option value="0">Disabled</option></select></label>
+              <label>Browser auto-install<select id="cfg-browser-auto"><option value="1">Enabled</option><option value="0">Disabled</option></select></label>
+              <label>Workspace<code class="static-field" id="cfg-home"></code></label>
+              <label class="wide">Extra system instructions<textarea id="cfg-system-prompt" class="small-editor" placeholder="Optional instructions for the agent"></textarea></label>
+            </div>
+            <div class="row"><button id="save-cfg" class="btn primary">Save settings</button><button id="test-model" class="btn ghost">Test model</button><span id="cfg-status" class="muted"></span></div>
+          </div>
+          <div class="card">
+            <div class="detail-head"><h2>Diagnostics</h2><span id="health-status" class="muted"></span></div>
+            <div id="diag" class="muted">Test the model to see connection details.</div>
+            <pre id="log-tail" class="output">No backend log yet.</pre>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+<script src="app.js" defer></script>
+</body>
+</html>
